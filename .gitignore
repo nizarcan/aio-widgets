@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+/work/
+/dist/
+/.backups/
+/secrets/
+.env
+.env.*
+!.env.example
+*.key
+*auth.json
+*key*.txt
+opencode-go-usage.json
