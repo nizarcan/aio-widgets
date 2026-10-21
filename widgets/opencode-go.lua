@@ -2,7 +2,7 @@
 -- description = "Live rolling, weekly and monthly Go quota, with reset countdowns"
 -- icon = "gauge"
 -- type = "widget"
--- version = "1.4.2"
+-- version = "1.4.3"
 -- aio_version = "7.6.0"
 -- foldable = "true"
 -- on_resume_when_folding = "true"
@@ -19,6 +19,7 @@ local state, loaded, loading, requested_at, last_attempt, request_key, message, 
 local actions = {}
 local last_layout
 local last_handedness
+local graphics, last_panel, last_image
 local render, refresh
 
 local function trim(text)
@@ -86,7 +87,8 @@ local function display_density()
     local ok, value = pcall(function()
         return ui:getContext():getResources():getDisplayMetrics().density
     end)
-    return ok and tonumber(value) or 3
+    value = ok and tonumber(value)
+    return value and value > 0 and value < math.huge and value or 3
 end
 
 local function content_width(density)
@@ -94,7 +96,68 @@ local function content_width(density)
         -- AIO's divider spans the screen minus its two 8dp outer gutters.
         return ui:getContext():getResources():getDisplayMetrics().widthPixels / density - 16
     end)
-    return ok and width and width > 0 and math.floor(width + 0.5) or 350
+    return ok and width and width >= 240 and width < math.huge and math.floor(width + 0.5) or 350
+end
+
+local function svg_panel(drawing, width, height, density)
+    local svg = {'<svg xmlns="http://www.w3.org/2000/svg" width="' .. math.max(1, math.floor(width * density + 0.5))
+        .. '" height="' .. math.max(1, math.floor(height * density + 0.5))
+        .. '" viewBox="0 0 ' .. width .. ' ' .. height .. '" font-family="sans-serif">'}
+    for _, item in ipairs(drawing) do
+        if item[1] == "text" then
+            svg[#svg + 1] = '<text x="' .. item[3] .. '" y="' .. item[4] .. '" text-anchor="' .. item[7]
+                .. '" font-size="' .. item[5] .. '" fill="' .. item[6] .. '">' .. item[2] .. '</text>'
+        elseif item[4] > 0 then
+            svg[#svg + 1] = '<rect x="' .. item[2] .. '" y="' .. item[3] .. '" width="' .. item[4]
+                .. '" height="' .. item[5] .. '" rx="1" fill="' .. item[6] .. '"/>'
+        end
+    end
+    svg[#svg + 1] = '</svg>'
+    return "svg:" .. table.concat(svg)
+end
+
+local function png_panel(drawing, width, height, density)
+    -- AIO 7.6.1 rasterizes an auto-sized SVG icon with a negative size.
+    -- Use only public Android graphics classes, then the rectangular image API.
+    -- AIO exposes Java objects but does not provide a global luajava binding.
+    if not graphics then
+        local Class = ui:getContext():getClass():getClass()
+        local function bind(name) return Class:forName(name) end
+        graphics = {
+            Bitmap = bind("android.graphics.Bitmap"), Config = bind("android.graphics.Bitmap$Config"),
+            Format = bind("android.graphics.Bitmap$CompressFormat"), Canvas = bind("android.graphics.Canvas"),
+            Paint = bind("android.graphics.Paint"), Align = bind("android.graphics.Paint$Align"),
+            Typeface = bind("android.graphics.Typeface"), Base64 = bind("android.util.Base64"),
+            Stream = bind("java.io.ByteArrayOutputStream"),
+        }
+    end
+    local g = graphics
+    local bitmap = g.Bitmap:createBitmap(math.max(1, math.floor(width * density + 0.5)),
+        math.max(1, math.floor(height * density + 0.5)), g.Config.ARGB_8888)
+    local stream = g.Stream.new()
+    local ok, result = pcall(function()
+        local canvas, paint = g.Canvas.new(bitmap), g.Paint.new(3)
+        canvas:scale(density, density)
+        paint:setTypeface(g.Typeface:create("sans-serif", 0))
+        for _, item in ipairs(drawing) do
+            local color = item[6]
+            -- setColor is overloaded for int and packed long colors on Android.
+            paint:setARGB(255, tonumber(color:sub(2, 3), 16), tonumber(color:sub(4, 5), 16), tonumber(color:sub(6, 7), 16))
+            if item[1] == "text" then
+                paint:setTextSize(item[5])
+                paint:setTextAlign(item[7] == "end" and g.Align.RIGHT or g.Align.LEFT)
+                canvas:drawText(item[2], item[3], item[4], paint)
+            elseif item[4] > 0 then
+                canvas:drawRoundRect(item[2], item[3], item[2] + item[4], item[3] + item[5], 1, 1, paint)
+            end
+        end
+        assert(bitmap:compress(g.Format.PNG, 100, stream), "PNG encoding failed")
+        return "data:image/png;base64," .. g.Base64:encodeToString(stream:toByteArray(), 2)
+    end)
+    bitmap:recycle()
+    stream:close()
+    if not ok then error(result) end
+    return result
 end
 
 local function right_handed()
@@ -176,9 +239,8 @@ render = function()
         local bar_x = right and (width - bar_start - bar_width) or bar_start
         local label_x, label_anchor = right and (width - inset) or inset, right and "end" or "start"
         local percent_x, percent_anchor = right and inset or (width - inset), right and "start" or "end"
-        -- Intrinsic bitmap dimensions give AIO the actual rectangular height
-        -- immediately. Forcing a square icon and posting negative margins made
-        -- its RecyclerView measure a transient height during folding.
+        -- Both backends give AIO the rectangular height immediately, without
+        -- square icon sizing or deferred negative margins during folding.
         local primary = "#EEEEEE"
         if aio and aio.colors then
             local theme = aio:colors()
@@ -186,10 +248,8 @@ render = function()
                 primary = "#" .. theme.primary_text:sub(-6)
             end
         end
-        local pixel_width = math.floor(width * density + 0.5)
-        local pixel_height = math.floor(height * density + 0.5)
-        local canvas = {'<svg xmlns="http://www.w3.org/2000/svg" width="' .. pixel_width .. '" height="' .. pixel_height
-            .. '" viewBox="0 0 ' .. width .. ' ' .. height .. '" font-family="sans-serif">'}
+        local drawing = {}
+        local function draw(...) drawing[#drawing + 1] = {...} end
         for i, definition in ipairs(WINDOWS) do
             local item = state.usage[definition[1]]
             local left = math.max(0, 100 - item.percent)
@@ -200,19 +260,32 @@ render = function()
             local value = prefs.display_used and item.percent or left
             local fill = math.max(0, math.min(100, value)) * bar_width / 100
             local fill_x = right and (bar_x + bar_width - fill) or bar_x
-            local row = '<g transform="translate(0 ' .. ((i - 1) * row_height) .. ')">'
-                .. '<text x="' .. label_x .. '" y="' .. (minimized and 14 or 11) .. '" text-anchor="' .. label_anchor .. '" font-size="12.5" fill="' .. primary .. '">' .. definition[2] .. '</text>'
-                .. '<rect x="' .. bar_x .. '" y="' .. bar_y .. '" width="' .. bar_width .. '" height="5" rx="1" fill="#555555"/>'
-                .. '<rect x="' .. tostring(fill_x) .. '" y="' .. bar_y .. '" width="' .. tostring(fill) .. '" height="5" rx="1" fill="' .. color .. '"/>'
+            local y = (i - 1) * row_height
+            draw("text", definition[2], label_x, y + (minimized and 14 or 11), 12.5, primary, label_anchor)
+            draw("rect", bar_x, y + bar_y, bar_width, 5, "#555555")
+            draw("rect", fill_x, y + bar_y, fill, 5, color)
             if not minimized then
-                row = row .. '<text x="' .. label_x .. '" y="23" text-anchor="' .. label_anchor .. '" font-size="10.5" fill="' .. MUTED .. '">' .. hint .. '</text>'
-                    .. '<text x="' .. percent_x .. '" y="18" text-anchor="' .. percent_anchor .. '" font-size="12.5" fill="' .. primary .. '">'
-                    .. percent_text(value) .. (prefs.display_used and '% used' or '% left') .. '</text>'
+                draw("text", hint, label_x, y + 23, 10.5, MUTED, label_anchor)
+                draw("text", percent_text(value) .. (prefs.display_used and '% used' or '% left'), percent_x, y + 18, 12.5, primary, percent_anchor)
             end
-            canvas[#canvas + 1] = row .. '</g>'
         end
-        canvas[#canvas + 1] = '</svg>'
-        add("icon", "svg:" .. table.concat(canvas), {gravity = gravity}, function() refresh(true) end)
+        if ui.builder_image then
+            local panel = json.encode({width, height, density, drawing})
+            local ok = true
+            if panel ~= last_panel then
+                local result
+                ok, result = pcall(png_panel, drawing, width, height, density)
+                if ok then last_panel, last_image = panel, result end
+            end
+            if ok then
+                add("image", last_image, {width = width, height = height, scale = "fit", gravity = gravity}, function() refresh(true) end)
+            else
+                add("text", "Widget image unavailable · tap to retry", {size = 14, gravity = gravity, margin = "0 14dp"}, render)
+            end
+        else
+            -- AIO 7.6.0 supports intrinsic SVGs but has no rich image element.
+            add("icon", svg_panel(drawing, width, height, density), {gravity = gravity}, function() refresh(true) end)
+        end
         if message and not minimized then
             add("new_line", 0)
             add("text", message, {size = 11, color = MUTED, font_padding = false, gravity = gravity, margin = "0 14dp"}, function() refresh(true) end)
@@ -220,8 +293,8 @@ render = function()
     end
     local signature = json.encode(layout)
     if signature ~= last_layout then
-        last_layout = signature
         gui(layout).render()
+        last_layout = signature
     end
 end
 

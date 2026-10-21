@@ -1,7 +1,7 @@
 # OpenCode Go
 
 Displays the rolling, weekly, and monthly usage windows from your OpenCode Go
-account. Requires AIO Launcher **7.6.0 or newer**. Current widget version: **1.4.2**.
+account. Requires AIO Launcher **7.6.0 or newer**. Current widget version: **1.4.3**.
 
 ## Views
 
@@ -18,9 +18,11 @@ reset times on the right, percentages on the left, and fills bars from right to
 left. Text remains readable. The content uses the launcher's full width and
 balanced 14dp outer insets relative to its header divider.
 
-The widget renders SVGs at their actual rectangular pixel dimensions rather than
-forcing them into square icons. It also skips unchanged redraws, avoiding the
-large height jumps seen with the earlier negative-margin implementation.
+The widget reserves its actual rectangular dimensions rather than forcing the
+panel into a square icon. On AIO 7.6.1 and newer, it draws a PNG locally using
+public Android graphics APIs and displays it with explicit width and height.
+On AIO 7.6.0, it uses an intrinsically sized SVG. Unchanged panels are neither
+encoded again nor rebuilt, avoiding extra work and height jumps during folding.
 
 ## Setup and controls
 
@@ -71,7 +73,15 @@ provide a separate billing renewal date.
 
 ## Compatibility notes
 
-Handedness is read from AIO's `for_right_handed` preference. Intrinsic sizing uses
+Version 1.4.3 fixes the missing widget and the long "height and width must be > 0"
+error after upgrading to AIO 7.6.1. That build passes the automatic icon size
+(-1) to its SVG rasterizer as a negative image dimension. The PNG image path
+avoids that renderer and retains the 60dp/84dp folding geometry. Invalid display
+metrics also fall back to positive dimensions. Updating the script preserves
+the existing API key, preferences, and saved usage.
+
+Handedness is read from AIO's `for_right_handed` preference. Image sizing uses
 the display density, and the divider-width calculation allows for AIO's two
-8dp outer gutters. These integrations have been verified with AIO 7.6.0 on the
-connected Samsung phone; recheck them when upgrading AIO or changing its layout.
+8dp outer gutters. The original SVG path was verified with AIO 7.6.0; the PNG
+path was verified with AIO 7.6.1 on the connected Samsung phone. Recheck these
+integrations when upgrading AIO or changing its layout.

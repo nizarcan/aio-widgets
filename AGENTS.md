@@ -6,7 +6,7 @@
 - Follow AIO's handedness preference, theme text colors, and display density. Do not change launcher preferences while reading them.
 - Keep labels, bars, and percentages aligned. Compact mode shows window labels and bars; expanded mode adds percentages and reset times. Use the native settings gear for controls.
 - Retain balanced outer margins relative to the launcher divider. Do not force rectangular SVGs into square icons or use negative margins to correct their height; that caused collapse/expand jank.
-- Preserve intrinsic image sizing and skip unchanged redraws. Folding must update content without extra network requests or animation regressions.
+- Preserve rectangular image sizing and skip unchanged redraws. Use an explicit image width and height on AIO 7.6.1 and newer; its automatic-size SVG icon path passes negative dimensions to the rasterizer. Retain intrinsic SVG sizing only for the AIO 7.6.0 fallback. Folding must update content without extra network requests or animation regressions.
 - Use HTTPS, explicit request throttling, useful offline states, and API-reset timestamps. Do not assume a window has reset before checking its API reading.
 - Credentials belong in per-widget phone preferences. Never embed them in scripts, fixtures, screenshots, or Git history. Test data must be synthetic.
 - Run `./tools/check.sh` after behavioral changes. Visual changes also require checking the real widget on a connected phone, including folding and both handedness modes when relevant.
